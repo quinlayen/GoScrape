@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
+	"net/url"
 	"os"
 	"strings"
 
@@ -113,21 +115,26 @@ func scrapeProducts(productCollector *colly.Collector, q *queue.Queue, products 
 		if productLink != "" {
 			fullProductURL := baseURL + productLink
 
-			// Extract category from the current category page URL
+			parsedURL, err := url.Parse(fullProductURL)
+			if err != nil {
+				fmt.Println("Failed to parse product URL:", err)
+			}
 			category := extractCategoryFromURL(e.Request.URL.String())
 
-			fmt.Println("Found product link:", fullProductURL, "in category:", category)
+			fmt.Println("Queuing product link:", fullProductURL, "in category:", category)
 
-			// Create a new request with the category context
 			ctx := colly.NewContext()
 			ctx.Put("category", category)
-			//err := e.Request.Ctx.Clone().Put("category", category)
-			//if err != nil {
-			//	fmt.Println("Failed to set category context:", err)
-			//}
 
-			// Visit the product page with the category context attached
-			e.Request.Visit(fullProductURL, ctx)
+			err = q.AddRequest(&colly.Request{
+				URL:     parsedURL,
+				Method:  "GET",
+				Ctx:     ctx,
+				Headers: &http.Header{},
+			})
+			if err != nil {
+				fmt.Println("Failed to add product link:", err)
+			}
 		}
 	})
 
