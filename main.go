@@ -5,218 +5,101 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
-	"strings"
-
-	"github.com/gocolly/colly/v2"
-	"github.com/gocolly/colly/v2/queue"
 )
 
-const baseURL = "https://www.katespade.com"
-
-// Product struct to store product details
 type Product struct {
-	ID           string   `json:"item-id"`
-	Title        string   `json:"item-name"`
-	Price        string   `json:"item-price"`
-	Measurements []string `json:"item-measurements,omitempty"`
-	Materials    []string `json:"item-materials,omitempty"`
-	Features     []string `json:"item-features,omitempty"`
-	Img          string   `json:"img,omitempty"`
-	Category     string   `json:"category,omitempty"`
+	ID       string `json:"id"`
+	Title    string `json:"title"`
+	Category string `json:"category"`
+	Price    string `json:"price"`
+	Image    string `json:"image"`
 }
 
-func main() {
-	c := colly.NewCollector(
-		colly.AllowedDomains("www.katespade.com", "katespade.com"),
-	)
+func fetchCategoryData(category string) []Product {
+	apiURL := fmt.Sprintf("https://www.katespade.com/api/get-shop/%s/view-all?page=1", category)
+	fmt.Printf("Fetching API URL: %s\n", apiURL)
 
-	q, err := queue.New(2, &queue.InMemoryQueueStorage{MaxSize: 10000})
+	resp, err := http.Get(apiURL)
 	if err != nil {
-		log.Fatalf("Failed to initialize queue: %v", err)
+		log.Fatalf("Failed to fetch API: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var result map[string]interface{}
+	err = json.NewDecoder(resp.Body).Decode(&result)
+	if err != nil {
+		log.Fatalf("Failed to decode API response: %v", err)
 	}
 
-	categoryLinks := getCategoryLinks(c)
-	for _, category := range categoryLinks {
-		if shouldSkipCategory(category) {
-			fmt.Println("Skipping category:", category)
-			continue
-		}
-		fullURL := baseURL + category
-		err := q.AddURL(fullURL)
-		if err != nil {
-			fmt.Println("Failed to add category link:", err)
-		}
+	pageData := result["pageData"].(map[string]interface{})
+	productsData := pageData["products"].([]interface{})
+	breadcrumbs := pageData["breadcrumbs"].([]interface{})
+
+	categoryName := ""
+	if len(breadcrumbs) > 0 {
+		categoryName = breadcrumbs[0].(map[string]interface{})["htmlValue"].(string)
 	}
 
 	var products []Product
+	for _, p := range productsData {
+		product := p.(map[string]interface{})
 
-	productCollector := colly.NewCollector(
-		colly.AllowedDomains("www.katespade.com", "katespade.com"),
-	)
+		id := product["productId"].(string)
+		title := product["name"].(string)
 
-	// Debugging: Confirm product pages are being visited
-	productCollector.OnRequest(func(r *colly.Request) {
-		//r.Ctx.Put("category", extractCategoryFromURL(r.URL.String()))
-		fmt.Println("Visiting product page:", r.URL.String())
-	})
-
-	// Handle errors during product page visits
-	productCollector.OnError(func(r *colly.Response, err error) {
-		fmt.Printf("Request to %s failed with status %d: %v\n", r.Request.URL, r.StatusCode, err)
-	})
-
-	scrapeProducts(productCollector, q, &products)
-
-	err = exportToJSON(products, "products.json")
-	if err != nil {
-		log.Fatalf("Failed to export to JSON: %v", err)
-	}
-
-	fmt.Println("Scraping complete! Data saved to products.json")
-} // End of main
-
-// getCategoryLinks scrapes the main page to extract category links
-func getCategoryLinks(c *colly.Collector) []string {
-	var categories []string
-
-	c.OnHTML("div.menu-tier-1.css-1h5bbey div.css-wnawyw div.css-19rc50l a", func(e *colly.HTMLElement) {
-		href := e.Attr("href")
-		if strings.HasPrefix(href, "/shop/") && strings.Contains(href, "view-all") {
-			categories = append(categories, href)
-			fmt.Println("Found category link:", href)
-		}
-	})
-
-	err := c.Visit(baseURL)
-	if err != nil {
-		log.Fatal("Failed to visit main page:", err)
-	}
-	return categories
-}
-
-// shouldSkipCategory checks if a category should be skipped
-func shouldSkipCategory(category string) bool {
-	skipCategories := []string{"/shop/new/view-all", "/shop/home/view-all", "/shop/gifts/view-all", "/shop/sale/view-all"}
-	for _, skip := range skipCategories {
-		if strings.Contains(category, skip) {
-			return true
-		}
-	}
-	return false
-}
-
-// scrapeProducts handles scraping product listings and individual product details
-func scrapeProducts(productCollector *colly.Collector, q *queue.Queue, products *[]Product) {
-
-	productCollector.OnHTML("div.product-tile", func(e *colly.HTMLElement) {
-		productLink := e.ChildAttr("div.product-name a", "href")
-		if productLink != "" {
-			fullProductURL := baseURL + productLink
-
-			parsedURL, err := url.Parse(fullProductURL)
-			if err != nil {
-				fmt.Println("Failed to parse product URL:", err)
-			}
-			category := extractCategoryFromURL(e.Request.URL.String())
-
-			fmt.Println("Queuing product link:", fullProductURL, "in category:", category)
-
-			ctx := colly.NewContext()
-			ctx.Put("category", category)
-
-			err = q.AddRequest(&colly.Request{
-				URL:     parsedURL,
-				Method:  "GET",
-				Ctx:     ctx,
-				Headers: &http.Header{},
-			})
-			if err != nil {
-				fmt.Println("Failed to add product link:", err)
+		// Extract price
+		price := ""
+		if defaultVariant, ok := product["defaultVariant"].(map[string]interface{}); ok {
+			if prices, ok := defaultVariant["prices"].(map[string]interface{}); ok {
+				if currentPrice, ok := prices["currentPrice"].(float64); ok {
+					price = fmt.Sprintf("$%.2f", currentPrice)
+				}
 			}
 		}
-	})
 
-	// Enable pagination
-	productCollector.OnHTML("a.pagination-next", func(e *colly.HTMLElement) {
-		nextPage := e.Request.AbsoluteURL(e.Attr("href"))
-		fmt.Println("Found next page:", nextPage)
-		err := q.AddURL(nextPage)
-		if err != nil {
-			fmt.Println("Failed to add next page:", err)
-		}
-	})
-
-	// Corrected XPath selectors for product details
-	productCollector.OnXML("//div[@class='css-hfoyj8']", func(e *colly.XMLElement) {
-		id := e.ChildText(".//div[@id='description2']//ul/li")
-		title := e.ChildText(".//h1[contains(@class,'pdp-product-title')]")
-		price := e.ChildText(".//p[contains(@class, 'active-price')]")
-		img := e.ChildAttr(".//img[@class='chakra-image']", "src")
-
-		measurements := e.ChildTexts(".//ul[contains(@class, 'measurements-list')]/li")
-		materials := e.ChildTexts(".//ul[contains(@class, 'materials-list')]/li")
-		features := e.ChildTexts(".//ul[contains(@class, 'features-list')]/li")
-
-		category := e.Request.Ctx.Get("category")
-
-		product := Product{
-			ID:           id,
-			Title:        title,
-			Price:        price,
-			Measurements: measurements,
-			Materials:    materials,
-			Features:     features,
-			Img:          img,
-			Category:     category,
+		// Extract image
+		image := ""
+		if defaultColor, ok := product["defaultColor"].(map[string]interface{}); ok {
+			if img, ok := defaultColor["image"].(map[string]interface{}); ok {
+				image = img["src"].(string)
+			}
 		}
 
-		*products = append(*products, product)
-	})
-
-	err := q.Run(productCollector)
-	if err != nil {
-		log.Fatal("Queue run failed:", err)
-	} else {
-		fmt.Println("Queue successfully processed product pages!")
+		products = append(products, Product{
+			ID:       id,
+			Title:    title,
+			Category: categoryName,
+			Price:    price,
+			Image:    image,
+		})
 	}
+
+	return products
 }
 
-func extractCategoryFromURL(url string) string {
-	parts := strings.Split(url, "/")
-	for i, part := range parts {
-		if part == "shop" && i+1 < len(parts) {
-			return parts[i+1] // Extract category from URLs like /shop/handbags/view-all
-		}
-	}
-	return "Unknown"
-}
-
-//func extractCategoryFromURL(url string) string {
-//	parts := strings.Split(url, "/")
-//	for i, part := range parts {
-//		if part == "shop" && i+1 < len(parts) {
-//			return parts[i+1]
-//		}
-//	}
-//	return "Unknown"
-//}
-
-// exportToJSON writes the scraped products to a JSON file
-func exportToJSON(products []Product, filename string) error {
-	file, err := os.Create(filename)
+func saveToFile(products []Product) {
+	file, err := os.Create("products.json")
 	if err != nil {
-		return fmt.Errorf("could not create file: %v", err)
+		log.Fatalf("Failed to create file: %v", err)
 	}
 	defer file.Close()
 
-	encoder := json.NewEncoder(file)
-	encoder.SetIndent("", "  ") // Pretty-print JSON with indentation
-
-	if err := encoder.Encode(products); err != nil {
-		return fmt.Errorf("could not encode JSON: %v", err)
+	err = json.NewEncoder(file).Encode(products)
+	if err != nil {
+		log.Fatalf("Failed to write JSON to file: %v", err)
 	}
 
-	return nil
+	fmt.Println("Scraping complete! Data saved to products.json")
+}
+
+func main() {
+	category := "handbags" // Change this to the desired category
+	products := fetchCategoryData(category)
+
+	for _, p := range products {
+		fmt.Printf("ID: %s\nTitle: %s\nCategory: %s\nPrice: %s\nImage: %s\n---------------------------\n", p.ID, p.Title, p.Category, p.Price, p.Image)
+	}
+
+	saveToFile(products)
 }
