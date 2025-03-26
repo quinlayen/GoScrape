@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -70,6 +71,11 @@ func ensureDir(dir string) {
 }
 
 func main() {
+
+	testMode := flag.Bool("test", false, "Enable test mode: scrape limited data")
+	flag.BoolVar(testMode, "t", false, "Enable test mode: scrape limited data")
+	flag.Parse()
+
 	categories := []string{"handbags", "wallets", "jewelry", "shoes", "clothing", "accessories"}
 	excludedCategories := map[string]bool{
 		"new":   true,
@@ -91,7 +97,12 @@ func main() {
 
 		fmt.Printf("Scraping category: %s\n", category)
 		page := 1
-		for {
+
+		maxPages := 1
+		if !*testMode {
+			maxPages = 1000
+		}
+		for ; page <= maxPages; page++{
 			apiURL := fmt.Sprintf("https://www.katespade.com/api/get-shop/%s/view-all?page=%d", category, page)
 			fmt.Printf("Fetching API URL: %s\n", apiURL)
 
@@ -143,7 +154,9 @@ func main() {
 					prod.ID, prod.Title, prod.Category, prod.Price, prod.Image)
 			}
 
-			page++
+			if *testMode {
+				break
+			}
 		}
 	}
 
