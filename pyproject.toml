@@ -1,0 +1,30 @@
+[project]
+name = "goscrape"
+version = "0.1.0"
+description = "Add your description here"
+authors = [
+    { name = "Peter Faso", email = "quinlayen@gmail.com" }
+]
+dependencies = [
+    "pandas>=2.2.3",
+    "openpyxl>=3.1.5",
+    "requests>=2.32.3",
+    "pillow>=11.1.0",
+    "black>=25.1.0",
+]
+readme = "README.md"
+requires-python = ">= 3.8"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.rye]
+managed = true
+dev-dependencies = []
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/goscrape"]

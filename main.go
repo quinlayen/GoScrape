@@ -3,220 +3,158 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
-	"strings"
-
-	"github.com/gocolly/colly/v2"
-	"github.com/gocolly/colly/v2/queue"
+	"path/filepath"
 )
 
-const baseURL = "https://www.katespade.com"
-
-// Product struct to store product details
 type Product struct {
-	ID           string   `json:"item-id"`
-	Title        string   `json:"item-name"`
-	Price        string   `json:"item-price"`
-	Measurements []string `json:"item-measurements,omitempty"`
-	Materials    []string `json:"item-materials,omitempty"`
-	Features     []string `json:"item-features,omitempty"`
-	Img          string   `json:"img,omitempty"`
-	Category     string   `json:"category,omitempty"`
+	ID       string `json:"id"`
+	Title    string `json:"title"`
+	Category string `json:"category"`
+	Price    string `json:"price"`
+	Image    string `json:"image"`
 }
 
-func main() {
-	c := colly.NewCollector(
-		colly.AllowedDomains("www.katespade.com", "katespade.com"),
-	)
-
-	q, err := queue.New(2, &queue.InMemoryQueueStorage{MaxSize: 10000})
-	if err != nil {
-		log.Fatalf("Failed to initialize queue: %v", err)
-	}
-
-	categoryLinks := getCategoryLinks(c)
-	for _, category := range categoryLinks {
-		if shouldSkipCategory(category) {
-			fmt.Println("Skipping category:", category)
-			continue
-		}
-		fullURL := baseURL + category
-		err := q.AddURL(fullURL)
-		if err != nil {
-			fmt.Println("Failed to add category link:", err)
-		}
-	}
-
-	var products []Product
-
-	productCollector := colly.NewCollector(
-		colly.AllowedDomains("www.katespade.com", "katespade.com"),
-	)
-
-	// Debugging: Confirm product pages are being visited
-	productCollector.OnRequest(func(r *colly.Request) {
-		//r.Ctx.Put("category", extractCategoryFromURL(r.URL.String()))
-		fmt.Println("Visiting product page:", r.URL.String())
-	})
-
-	// Handle errors during product page visits
-	productCollector.OnError(func(r *colly.Response, err error) {
-		fmt.Printf("Request to %s failed with status %d: %v\n", r.Request.URL, r.StatusCode, err)
-	})
-
-	scrapeProducts(productCollector, q, &products)
-
-	err = exportToJSON(products, "products.json")
-	if err != nil {
-		log.Fatalf("Failed to export to JSON: %v", err)
-	}
-
-	fmt.Println("Scraping complete! Data saved to products.json")
-} // End of main
-
-// getCategoryLinks scrapes the main page to extract category links
-func getCategoryLinks(c *colly.Collector) []string {
-	var categories []string
-
-	c.OnHTML("div.menu-tier-1.css-1h5bbey div.css-wnawyw div.css-19rc50l a", func(e *colly.HTMLElement) {
-		href := e.Attr("href")
-		if strings.HasPrefix(href, "/shop/") && strings.Contains(href, "view-all") {
-			categories = append(categories, href)
-			fmt.Println("Found category link:", href)
-		}
-	})
-
-	err := c.Visit(baseURL)
-	if err != nil {
-		log.Fatal("Failed to visit main page:", err)
-	}
-	return categories
+type APIResponse struct {
+	PageData struct {
+		Products []struct {
+			ID     string `json:"id"`
+			Name   string `json:"name"`
+			Prices struct {
+				CurrentPrice float64 `json:"currentPrice"`
+			} `json:"prices"`
+			Media struct {
+				Full []struct {
+					Src string `json:"src"`
+				} `json:"full"`
+			} `json:"media"`
+		} `json:"products"`
+	} `json:"pageData"`
 }
 
-// shouldSkipCategory checks if a category should be skipped
-func shouldSkipCategory(category string) bool {
-	skipCategories := []string{"/shop/new/view-all", "/shop/home/view-all", "/shop/gifts/view-all", "/shop/sale/view-all"}
-	for _, skip := range skipCategories {
-		if strings.Contains(category, skip) {
-			return true
-		}
-	}
-	return false
-}
-
-// scrapeProducts handles scraping product listings and individual product details
-func scrapeProducts(productCollector *colly.Collector, q *queue.Queue, products *[]Product) {
-
-	productCollector.OnHTML("div.product-tile", func(e *colly.HTMLElement) {
-		productLink := e.ChildAttr("div.product-name a", "href")
-		if productLink != "" {
-			fullProductURL := baseURL + productLink
-
-			parsedURL, err := url.Parse(fullProductURL)
-			if err != nil {
-				fmt.Println("Failed to parse product URL:", err)
-			}
-			category := extractCategoryFromURL(e.Request.URL.String())
-
-			fmt.Println("Queuing product link:", fullProductURL, "in category:", category)
-
-			ctx := colly.NewContext()
-			ctx.Put("category", category)
-
-			err = q.AddRequest(&colly.Request{
-				URL:     parsedURL,
-				Method:  "GET",
-				Ctx:     ctx,
-				Headers: &http.Header{},
-			})
-			if err != nil {
-				fmt.Println("Failed to add product link:", err)
-			}
-		}
-	})
-
-	// Enable pagination
-	productCollector.OnHTML("a.pagination-next", func(e *colly.HTMLElement) {
-		nextPage := e.Request.AbsoluteURL(e.Attr("href"))
-		fmt.Println("Found next page:", nextPage)
-		err := q.AddURL(nextPage)
-		if err != nil {
-			fmt.Println("Failed to add next page:", err)
-		}
-	})
-
-	// Corrected XPath selectors for product details
-	productCollector.OnXML("//div[@class='css-hfoyj8']", func(e *colly.XMLElement) {
-		id := e.ChildText(".//div[@id='description2']//ul/li")
-		title := e.ChildText(".//h1[contains(@class,'pdp-product-title')]")
-		price := e.ChildText(".//p[contains(@class, 'active-price')]")
-		img := e.ChildAttr(".//img[@class='chakra-image']", "src")
-
-		measurements := e.ChildTexts(".//ul[contains(@class, 'measurements-list')]/li")
-		materials := e.ChildTexts(".//ul[contains(@class, 'materials-list')]/li")
-		features := e.ChildTexts(".//ul[contains(@class, 'features-list')]/li")
-
-		category := e.Request.Ctx.Get("category")
-
-		product := Product{
-			ID:           id,
-			Title:        title,
-			Price:        price,
-			Measurements: measurements,
-			Materials:    materials,
-			Features:     features,
-			Img:          img,
-			Category:     category,
-		}
-
-		*products = append(*products, product)
-	})
-
-	err := q.Run(productCollector)
+func downloadImage(url, filepath string) error {
+	resp, err := http.Get(url)
 	if err != nil {
-		log.Fatal("Queue run failed:", err)
-	} else {
-		fmt.Println("Queue successfully processed product pages!")
+		return fmt.Errorf("failed to download image %s: %v", url, err)
 	}
-}
+	defer resp.Body.Close()
 
-func extractCategoryFromURL(url string) string {
-	parts := strings.Split(url, "/")
-	for i, part := range parts {
-		if part == "shop" && i+1 < len(parts) {
-			return parts[i+1] // Extract category from URLs like /shop/handbags/view-all
-		}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("non-200 response code %d for image %s", resp.StatusCode, url)
 	}
-	return "Unknown"
-}
 
-//func extractCategoryFromURL(url string) string {
-//	parts := strings.Split(url, "/")
-//	for i, part := range parts {
-//		if part == "shop" && i+1 < len(parts) {
-//			return parts[i+1]
-//		}
-//	}
-//	return "Unknown"
-//}
-
-// exportToJSON writes the scraped products to a JSON file
-func exportToJSON(products []Product, filename string) error {
-	file, err := os.Create(filename)
+	file, err := os.Create(filepath)
 	if err != nil {
-		return fmt.Errorf("could not create file: %v", err)
+		return fmt.Errorf("failed to create file %s: %v", filepath, err)
 	}
 	defer file.Close()
 
-	encoder := json.NewEncoder(file)
-	encoder.SetIndent("", "  ") // Pretty-print JSON with indentation
-
-	if err := encoder.Encode(products); err != nil {
-		return fmt.Errorf("could not encode JSON: %v", err)
+	_, err = io.Copy(file, resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to save image %s: %v", url, err)
 	}
 
 	return nil
+}
+
+func ensureDir(dir string) {
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		err := os.MkdirAll(dir, 0755)
+		if err != nil {
+			log.Fatalf("Failed to create directory %s: %v", dir, err)
+		}
+	}
+}
+
+func main() {
+	categories := []string{"handbags", "wallets", "jewelry", "shoes", "clothing", "accessories"}
+	excludedCategories := map[string]bool{
+		"new":   true,
+		"home":  true,
+		"gifts": true,
+		"sale":  true,
+	}
+
+	var allProducts []Product
+
+	imageDir := "data/images"
+	ensureDir(imageDir)
+
+	for _, category := range categories {
+		if excludedCategories[category] {
+			fmt.Printf("Skipping category: %s\n", category)
+			continue
+		}
+
+		fmt.Printf("Scraping category: %s\n", category)
+		page := 1
+		for {
+			apiURL := fmt.Sprintf("https://www.katespade.com/api/get-shop/%s/view-all?page=%d", category, page)
+			fmt.Printf("Fetching API URL: %s\n", apiURL)
+
+			resp, err := http.Get(apiURL)
+			if err != nil {
+				log.Printf("Failed to fetch API: %v", err)
+				break
+			}
+			defer resp.Body.Close()
+
+			var apiResp APIResponse
+			if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+				log.Printf("Failed to parse JSON response: %v", err)
+				break
+			}
+
+			if len(apiResp.PageData.Products) == 0 {
+				fmt.Printf("No more products found in category: %s\n", category)
+				break
+			}
+
+			for _, product := range apiResp.PageData.Products {
+				price := fmt.Sprintf("$%.2f", product.Prices.CurrentPrice)
+				imageURL := ""
+				if len(product.Media.Full) > 0 {
+					imageURL = product.Media.Full[0].Src
+				}
+
+				imageFileName := fmt.Sprintf("%s.jpg", product.ID)
+				imagePath := filepath.Join(imageDir, imageFileName)
+
+				if imageURL != "" {
+					err := downloadImage(imageURL, imagePath)
+					if err != nil {
+						log.Printf("Error downloading image for product %s: %v", product.ID, err)
+					}
+				}
+
+				prod := Product{
+					ID:       product.ID,
+					Title:    product.Name,
+					Category: category,
+					Price:    price,
+					Image:    imageFileName,
+				}
+
+				allProducts = append(allProducts, prod)
+				fmt.Printf("ID: %s\nTitle: %s\nCategory: %s\nPrice: %s\nImage: %s\n---------------------------\n",
+					prod.ID, prod.Title, prod.Category, prod.Price, prod.Image)
+			}
+
+			page++
+		}
+	}
+
+	file, err := json.MarshalIndent(allProducts, "", "  ")
+	if err != nil {
+		log.Fatalf("Failed to marshal products: %v", err)
+	}
+
+	if err := os.WriteFile("data/products.json", file, 0644); err != nil {
+		log.Fatalf("Failed to write JSON file: %v", err)
+	}
+
+	fmt.Println("Scraping complete! Data saved to products.json")
 }
