@@ -1,1 +1,11 @@
 *.json
+*.xlsx
+.venv
+.idea
+.DS_Store
+__pycache__
+*.pyc
+*.log
+*.log.*
+data/
+.main.go.swp
