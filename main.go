@@ -84,6 +84,10 @@ func main() {
 		"sale":  true,
 	}
 
+	if *testMode {
+		categories = categories[:2]
+	}
+
 	var allProducts []Product
 
 	imageDir := "data/images"
@@ -102,7 +106,7 @@ func main() {
 		if !*testMode {
 			maxPages = 1000
 		}
-		for ; page <= maxPages; page++{
+		for ; page <= maxPages; page++ {
 			apiURL := fmt.Sprintf("https://www.katespade.com/api/get-shop/%s/view-all?page=%d", category, page)
 			fmt.Printf("Fetching API URL: %s\n", apiURL)
 

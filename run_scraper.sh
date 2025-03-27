@@ -9,7 +9,7 @@ if [ "$#" -gt 1 ]; then
 fi
 
 if [ "$#" -eq 1 ]; then
-    if [ "$1" == "-test" ] || [ "$1" == '-t' ]; then
+    if [ "$1" == "--test" ] || [ "$1" == '-t' ]; then
         echo "Running Go scraper..."
         go run main.go -test
     else
@@ -23,8 +23,13 @@ else
 fi
 
 if [ $? -eq 0 ]; then
-    echo "Scraping completed successfully. Now inserting into database..."
-    rye run python scripts/daily_comparison.py
+    if [ "$#" -eq 1 ]; then
+        echo "Test scraping completed successfully. Now inserting into database for testing."
+        rye run python scripts/daily_comparison.py --test
+    else
+        echo "Scraping completed successfully. Now inserting into database."
+        rye run python scripts/daily_comparison.py
+    fi
 else
     echo "Scraping failed. Please check for errors in the Go script."
 fi
