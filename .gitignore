@@ -9,3 +9,4 @@ __pycache__
 *.log.*
 data/
 .main.go.swp
+db/

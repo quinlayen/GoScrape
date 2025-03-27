@@ -1,26 +1,27 @@
 import argparse
 import sqlite3
-import pandas as pd # type: ignore
+import pandas as pd
 import datetime
 import json
 import sys
 import os
+import random
 
-# Set up an argument parser for test mode.
 parser = argparse.ArgumentParser(description="Daily price comparison")
 parser.add_argument("--test", "-t", action="store_true", help="Enable test mode")
 args = parser.parse_args()
 
-# Ensure the database directory exists.
 db_dir = "db"
 if not os.path.exists(db_dir):
     os.makedirs(db_dir)
 
-# Connect to the SQLite database.
-db_path = os.path.join(db_dir, "products.db")
+if args.test:
+    db_path = os.path.join(db_dir, "test_products.db")
+else:
+    db_path = os.path.join(db_dir, "products.db")
+
 conn = sqlite3.connect(db_path)
 
-# Create the 'products' table if it doesn't exist.
 create_table_query = """
 CREATE TABLE IF NOT EXISTS products (
     id TEXT,
@@ -35,10 +36,8 @@ CREATE TABLE IF NOT EXISTS products (
 conn.execute(create_table_query)
 conn.commit()
 
-# Load current data from the database.
 df_db = pd.read_sql_query("SELECT * FROM products", conn)
 
-# If the database is empty, load data from the JSON file.
 if df_db.empty:
     json_file = "data/products.json"
     if not os.path.exists(json_file):
@@ -51,25 +50,17 @@ if df_db.empty:
     except Exception as e:
         print(f"Error reading JSON file: {e}")
         sys.exit(1)
-    
-    # Convert JSON data to a DataFrame.
     df_json = pd.DataFrame(json_data)
-    
-    # If the JSON data does not have a scrape_date, add one (using current time).
     if 'scrape_date' not in df_json.columns:
         current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         df_json["scrape_date"] = current_time
-    
-    # Insert the data into the database.
     df_json.to_sql("products", conn, if_exists="append", index=False)
     print("Data loaded into the database from JSON.")
     df_db = pd.read_sql_query("SELECT * FROM products", conn)
 
-# Check unique scrape_date values.
 unique_dates = df_db['scrape_date'].unique()
 print("Unique scrape dates in database:", unique_dates)
 
-# In test mode, if only one date exists, simulate a second date.
 if args.test and len(unique_dates) < 2:
     print("Test mode active: Simulating a second scrape date.")
     base_date = unique_dates[0]
@@ -78,20 +69,15 @@ if args.test and len(unique_dates) < 2:
     except Exception as e:
         print(f"Error parsing base date: {e}")
         sys.exit(1)
-    # Create a new date by subtracting one day.
     new_date = (base_dt - datetime.timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
-    
-    # Duplicate the existing data and update the scrape_date.
     df_simulated = df_db.copy()
     df_simulated['scrape_date'] = new_date
-    # Insert the simulated data into the database.
+    df_simulated['price'] = df_simulated['price'].apply(lambda x: f"${float(x.replace('$','')) * random.uniform(0.9, 1.1):.2f}")
     df_simulated.to_sql("products", conn, if_exists="append", index=False)
-    # Re-load the data from the database.
     df_db = pd.read_sql_query("SELECT * FROM products", conn)
     unique_dates = df_db['scrape_date'].unique()
     print("After simulation, unique scrape dates:", unique_dates)
 
-# Now, query the two most recent scrape_date values.
 query_dates = "SELECT DISTINCT scrape_date FROM products ORDER BY scrape_date DESC LIMIT 2;"
 dates = [row[0] for row in conn.execute(query_dates)]
 if len(dates) < 2:
@@ -107,15 +93,12 @@ query_previous = f"SELECT * FROM products WHERE scrape_date = '{date2}'"
 df_latest = pd.read_sql_query(query_latest, conn)
 df_previous = pd.read_sql_query(query_previous, conn)
 
-# Ensure the merge key (id) exists.
 if 'id' not in df_latest.columns or 'id' not in df_previous.columns:
     print("id column missing in one of the datasets.")
     sys.exit(1)
 
-# Merge based on id.
 comparison = pd.merge(df_latest, df_previous, on="id", suffixes=("_latest", "_previous"))
 
-# Clean up price fields: remove $ and commas then convert to float.
 def clean_price(price):
     try:
         return float(str(price).replace("$", "").replace(",", ""))
@@ -126,9 +109,13 @@ comparison["price_latest"] = comparison["price_latest"].apply(clean_price)
 comparison["price_previous"] = comparison["price_previous"].apply(clean_price)
 comparison["price_change"] = comparison["price_latest"] - comparison["price_previous"]
 
-# Save the comparison to an Excel file.
 with pd.ExcelWriter("daily_price_comparison.xlsx") as writer:
-    comparison.to_excel(writer, sheet_name="All Changes", index=False)
+    # Write all scraped items
+    df_db.to_excel(writer, sheet_name="All Items", index=False)
+    
+    # Filter items with price changes (non-zero price_change)
+    df_changes = comparison[comparison["price_change"] != 0]
+    df_changes.to_excel(writer, sheet_name="Price Changes", index=False)
 
 print("Comparison complete. Results saved to daily_price_comparison.xlsx")
 conn.close()
